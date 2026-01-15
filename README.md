@@ -2,9 +2,9 @@ This repo contains the scripts and datasets for modeling streamflow at gaged sit
 Please contact Jessica Herrmann (jessica@sierrastreamsinstitute.org) with any questions.
 		
 Notes on units of measure –
-Depths and measurements are in cm
-Average velocity has been converted from m/s to cm/s
-Angle measurements are in radians
+Depths and measurements are in cm.
+Average velocity has been converted from m/s to cm/s.
+Angle measurements are in radians.
 
 
 CONTENTS
