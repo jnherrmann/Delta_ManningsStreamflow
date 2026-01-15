@@ -1,0 +1,279 @@
+---
+title: "ManningsQCalculator_01.07.26_JH"
+author: "Jessica Herrmann"
+date: "2026-01-07"
+output: html_document
+---
+Final script/calculator for converting stage data to a modeled estimate of discharge/streamflow (Q), using the Manning's Equation approach. All of the mathematical steps for estimating flow (Q)are briefly explained in the commentsbelow and are also detailed here: <https://docs.google.com/document/d/1m4-D8H6UUB-bVoDu4kz7VK1cyIYRAUKvImsrpQHdjfY/edit?tab=t.0>
+
+
+PREPARING & FORMATTING YOUR WATER LEVEL DATA
+
+You will need to complete the following the steps in order to make your stage data compatible with the format of this script:
+
+1. Your stage data should be compensated for barometric pressure prior to running this script to estimate flow. The barometric compensation is done in HOBOware.
+
+2. You will need to format your compensated stage data with one column for date/time (labelled "Date_Time" in this script) and a second column for stage height/water level (labelled "Sensor_Depth_feet").
+
+
+```{r Package Libraries}
+library(curl)
+# library(dplyr) # Included in tidyverse
+library(tidyverse)
+library(tidyr)
+library(stringr)
+```
+
+```{r Load data}
+## Consolidated dataset with starting water depths & initial channel geometry values at time t = 0, a.k.a. when a given pressure transducer was placed in a stream. These are constants for each site that are required to run the rest of the model. You will have to select your site of interest from the list.
+
+ChanGeom <-  curl("https://raw.githubusercontent.com/jnherrmann/Delta_ManningsStreamflow/refs/heads/main/Delta_ChannelGeometry_InitialValues_FINAL.csv")
+ChanGeom <- read.csv(ChanGeom, header = T, sep = ",")
+ChanGeom <- ChanGeom[,c(2:46)]
+
+
+## Stage data for your site (may want to split this up into separate scripts by site so it doesn't get too unruly). This dataset contains baro. pressure-compensated stage height data from each pressure transducer. Barometric compensation is done in HOBOware.
+
+## CAT CRK. EXAMPLE (using dummy dataset)
+CAT.stage <- curl("https://raw.githubusercontent.com/jnherrmann/Streamflow_Estimation_Practice/refs/heads/main/CatCrk_FacsimileTestData.csv")
+CAT.stage <- read.csv(CAT.stage, header = T, sep = ",")
+
+
+## NOTE - Remember to clear your environment between different versions of this script (i.e. for scripts run for different sites). Either that or name the vectors separately with the site ID's.
+```
+
+EXPLANATION OF VARIABLES:
+
+h_t is the recorded stage heights over time, which I am renaming 
+
+h_0 is the starting depth of water over the logger, renamed as 
+
+d1_0 through d5_0 are the five measured channel cross-sectional depths at time t = 0
+
+d1_t through d5_t are the estimated channel cross-sectional depths
+
+```{r Pairing Datasets & Cleanup}
+## Pair each stage dataset with its corresponding channel geometry dataset.
+
+## CAT CRK. EXAMPLE
+CAT.geom <- ChanGeom[ChanGeom$Site_ID == "CAT", ] # Creating a new subset for just the Cat Crk. channel geometry values
+catcrk <- cbind(CAT.geom, CAT.stage) # Binding the stage data and channel geometry datasets
+
+catcrk$Sensor_Depth_feet <- 30.48*catcrk$Sensor_Depth_feet # Convert "Sensor_Depth_feet" from feet to cm
+colnames(catcrk)[colnames(catcrk) == "Sensor_Depth_feet"] <- "h_t" # Rename as "h_t"
+
+colnames(catcrk)[colnames(catcrk) == "Date_Time"] <- "t" # Rename "Date_Time" as "t", for Time
+catcrk$t <- mdy_hms(catcrk$t) # Format as a POSIXct object rather than a character string
+```
+
+```{r Vectorize Function Arguments}
+## Creating individual vectors from columns in the dataframe, then making them numeric
+## Please refer to "Channel Geometry Calculations for Estimated Flow" for more detailed variable descriptions.
+
+## Vectorized channel geometry variables and stage data
+h_0 <- as.numeric(catcrk$h_0) # Height of water over transducer ar time of setup, t = 0
+h_t <- as.numeric(catcrk$h_t) # Current stage height over transducer, at time t
+d1_0 <- as.numeric(catcrk$d1_0) # First cross-sectional depth at t = 0
+d2_0 <- as.numeric(catcrk$d2_0) # Second cross-sectional depth at t = 0
+d3_0 <- as.numeric(catcrk$d3_0) # Third cross-sectional depth at t = 0
+d4_0 <- as.numeric(catcrk$d4_0) # Fourth cross-sectional depth at t = 0
+d5_0 <- as.numeric(catcrk$d5_0) # Fifth cross-sectional depth at t = 0
+m_alpha <- as.numeric(catcrk$m_alpha) # Angle between delta h and M_t
+m_beta1 <- as.numeric(catcrk$m_beta1) # Measure of angle beta 1, aka angle of intersection between the segment d1_0 and the channel bed
+m_beta2 <- as.numeric(catcrk$m_beta2) # Measure of angle beta 2
+m_beta3 <- as.numeric(catcrk$m_beta3) # Measure of angle beta 3
+m_beta4 <- as.numeric(catcrk$m_beta4) # Measure of angle beta 4
+m_beta5 <- as.numeric(catcrk$m_beta5) # Measure of angle beta 5
+m_beta6 <- as.numeric(catcrk$m_beta6) # Measure of angle beta 6
+x1 <- as.numeric(catcrk$x1) # Segment 1 of wetted width
+x2 <- as.numeric(catcrk$x2) # Segment 2 of wetted width
+x3 <- as.numeric(catcrk$x3) # Segment 3 of wetted width
+x4 <- as.numeric(catcrk$x4) # Segment 4 of wetted width
+x5 <- as.numeric(catcrk$x5) # Segment 5 of wetted width
+x6 <- as.numeric(catcrk$x6) # Segment 6 of wetted width
+A_0 <- as.numeric(catcrk$A_0) # Cross-sectional area of water in channel at time t=0
+W_0 <- as.numeric(catcrk$W_0) # Wetted width at t = 0
+P1_0 <- as.numeric(catcrk$P1_0) # First cross-sectional wetted perimeter segment at t = 0
+P2_0 <- as.numeric(catcrk$P2_0) # Second cross-sectional wetted perimeter segment at t = 0
+P3_0 <- as.numeric(catcrk$P3_0) # Third cross-sectional wetted perimeter segment at t = 0
+P4_0 <- as.numeric(catcrk$P4_0) # Fourth cross-sectional wetted perimeter segment at t = 0
+P5_0 <- as.numeric(catcrk$P5_0) # Fifth cross-sectional wetted perimeter segment at t = 0
+P6_0 <- as.numeric(catcrk$P6_0) # Sixth cross-sectional wetted perimeter segment at t = 0
+n <- as.numeric(catcrk$n) # Manning's roughness coefficient
+S <-  as.numeric(catcrk$S) # Avg. channel slope
+L <-  as.numeric(catcrk$L) # L is the difference between h_0 and the estimated bankfull height.
+```
+
+```{r Precursor Depth Functions}
+## PRECURSOR DEPTH FUNCTIONS FOR CASE 1: when  h_t < h_0
+
+## Combined for d1_t
+d1function <- function(d1_0, h_0, h_t) {
+  d1_t <- ifelse(d1_0 < h_0,
+                 d1_0 - (h_0 - h_t),    # For cases when h_0 is under d1_0
+                 (d1_0 - h_0) + h_t)    # For alt case, when h_0 >= d1_0
+  return(data.frame(d1_t))
+}
+
+d1.df <- d1function(d1_0, h_0, h_t)
+
+## Combined for d2_t
+d2function <- function(d2_0, h_0, h_t) {
+  d2_t <- ifelse(d2_0 < h_0, d2_0 - (h_0 - h_t), (d2_0 - h_0) + h_t)
+  return(data.frame(d2_t))
+}
+
+d2.df <- d2function(d2_0, h_0, h_t)
+
+## Combined for d3_t
+d3function <- function(d3_0, h_0, h_t) {
+  d3_t <- ifelse(d3_0 < h_0, d3_0 - (h_0 - h_t), (d3_0 - h_0) + h_t)
+  return(data.frame(d3_t))
+}
+
+d3.df <- d3function(d3_0, h_0, h_t)
+
+## Combined for d4_t
+d4function <- function(d4_0, h_0, h_t) {
+  d4_t <- ifelse(d4_0 < h_0, d4_0 - (h_0 - h_t), (d4_0 - h_0) + h_t)
+  return(data.frame(d4_t))
+}
+
+d4.df <- d4function(d4_0, h_0, h_t)
+
+## Combined for d5_t
+d5function <- function(d5_0, h_0, h_t) {
+  d5_t <- ifelse(d5_0 < h_0, d5_0 - (h_0 - h_t), (d5_0 - h_0) + h_t)
+  return(data.frame(d5_t))
+}
+
+d5.df <- d5function(d5_0, h_0, h_t)
+
+## Replace negative values with 0's
+d1.df[d1.df$d1_t < 0, "d1_t"] <- 0
+d2.df[d2.df$d2_t < 0, "d2_t"] <- 0
+d3.df[d3.df$d3_t < 0, "d3_t"] <- 0
+d4.df[d4.df$d4_t < 0, "d4_t"] <- 0
+d5.df[d5.df$d5_t < 0, "d5_t"] <- 0
+
+## Vectorize the additional depth measurements at time t
+d1_t <- as.numeric(d1.df$d1_t) # First cross-sectional depth at t = 0
+d2_t <- as.numeric(d2.df$d2_t) # Second cross-sectional depth at t = 0
+d3_t <- as.numeric(d3.df$d3_t) # Third cross-sectional depth at t = 0
+d4_t <- as.numeric(d4.df$d4_t) # Fourth cross-sectional depth at t = 0
+d5_t <- as.numeric(d5.df$d5_t) # Fifth cross-sectional depth at t = 0
+
+## Bind all depth columns with original df
+catcrk.depths <- cbind(catcrk, d1.df, d2.df, d3.df, d4.df, d5.df)
+```
+
+I'm just including these functions as additional notes that explain the final Q function (next chunk).
+Basically, there are two cases described below and more succinctly summarized in the final function. Pulling them apart into separate functions was tricky to run (due to nested conditional row-wise operations on different vectors inputs). However, using mutate() and case_when() in dplyr seems to have provided the best solution. Note that the order of operations in the final function had to be adjusted, as mutate() operates sequentially.
+
+
+## FUNCTION FOR CASE 1: Solving for Q after solving for d1_t through d6_t
+
+case1function <- function(d1_t, d2_t, d3_t, d4_t, d5_t, m_beta1, m_beta2, m_beta3, m_beta4, m_beta5, m_beta6, x1, x2, x3, x4, x5, x6, n, S) {
+  P1_t <- d1_t/cos(m_beta1)                             # When d1_t = 0, P1_t will also be 0, so don't need an ifelse() here.
+  P2_t <- ifelse(d1_t > 0, (x2/cos(m_beta2)), 0)        # NOTE - Assumes channel is a half pipe and that d4_0 > d3_0
+  P3_t <- ifelse(d2_t > 0, (x2/cos(m_beta3)), 0)
+  P4_t <- ifelse(d4_t > 0, (x2/cos(m_beta4)), 0)
+  P5_t <- ifelse(d5_t > 0, (x2/cos(m_beta5)), 0)
+  P6_t <- d5_t/cos(m_beta6)
+  P_t <- P1_t + P2_t + P3_t + P4_t + P5_t + P6_t
+  A1_t <- d1_t*(x1/2)
+  A2_t <- (d1_t*x2) + (0.5*x2*abs(d2_t - d1_t))
+  A3_t <- (d2_t*x3) + (0.5*x3*abs(d3_t - d2_t))
+  A4_t <- (d3_t*x4) + (0.5*x4*abs(d4_t - d3_t))
+  A5_t <- (d4_t*x5) + (0.5*x5*abs(d5_t - d4_t))
+  A6_t <- d5_t*(x6 / 2)
+  A_t <- A1_t + A2_t + A3_t + A4_t + A5_t + A6_t
+  R_t <- A_t / P_t
+  Q_t <- (1.49/n)*(A_t)*(R_t^(2/3))*(S^(1/2))
+  return(data.frame(t, Q_t))
+}
+
+
+## FUNCTION FOR CASE 2: when h_t >= h_0
+
+case2function <- function(h_0, h_t, m_alpha, W_0, A_0, P1_0, P2_0, P3_0, P4_0, P5_0, S, n) {
+  M_t <- (h_t - h_0)/cos(m_alpha)                                               # Bank length at time t
+  J_t <- (h_t - h_0)*tan(m_alpha)                                               # Horizontal distance from the water's edge at time t
+  A_t <- 0.5*(h_t - h_0)*(2*J_t + 2*W_0) + A_0                                  # Area of the trapezoid plus starting cross-sectional area
+  P_0 <- P1_0 + P2_0 + P3_0 + P4_0 + P5_0 + P6_0                                # Wetted perimeter at time t = 0
+  P_t <- P_0 + 2*M_t                                                            # New wetted perimeter at time t
+  R_t <- A_t/P_t                                                                # New hydraulic radius at time t
+  Q_t <- ifelse((h_t - h_0) > L, NA, (1.49/n)*(A_t)*(R_t^(2/3))*(S^(1/2)))
+  return(data.frame(t, Q_t))
+}
+
+```{r Q Calculator}
+catcrk.depths2 <- catcrk.depths %>%
+  mutate(
+  P1_t = case_when(
+      h_t < h_0 ~ d1_t/cos(m_beta1),
+      .default = 0),
+  P2_t = case_when(
+      h_t < h_0 & d1_t > 0 ~ x2/cos(m_beta2),
+     .default = 0),
+  P3_t = case_when(
+      h_t < h_0 & d2_t > 0 ~ x2/cos(m_beta3),
+     .default = 0),
+  P4_t = case_when(
+      h_t < h_0 & d4_t > 0 ~ x2/cos(m_beta4),
+     .default = 0),
+  P5_t = case_when(
+      h_t < h_0 & d5_t > 0 ~ x2/cos(m_beta5),
+     .default = 0),
+  P6_t = case_when(
+      h_t < h_0 & d5_t > 0 ~ d5_t/cos(m_beta6),
+     .default = 0),
+  M_t = (h_t - h_0)/cos(m_alpha),
+  P_t = case_when(
+      h_t < h_0 ~ P1_t + P2_t + P3_t + P4_t + P5_t + P6_t,
+      h_t >= h_0 ~ P_0 + 2*M_t,
+     .default = NA),
+  A1_t = case_when(
+      h_t < h_0 ~ d1_t*(x1/2),
+     .default = NA),
+  A2_t = case_when(
+      h_t < h_0 ~ (d1_t*x2) + (0.5*x2*abs(d2_t - d1_t)),
+     .default = NA),
+  A3_t = case_when(
+    h_t < h_0 ~ (d2_t*x3) + (0.5*x3*abs(d3_t - d2_t)),
+    .default = NA),
+  A4_t = case_when(
+    h_t < h_0 ~ (d3_t*x4) + (0.5*x4*abs(d4_t - d3_t)),
+    .default = NA),
+  A5_t = case_when(
+    h_t < h_0 ~ (d4_t*x5) + (0.5*x5*abs(d5_t - d4_t)),
+    .default = NA),
+  A6_t = case_when(
+    h_t < h_0 ~ d5_t*(x6/2),
+    .default = NA),
+  J_t = (h_t - h_0)*tan(m_alpha),
+  A_t = case_when(
+    h_t < h_0 ~ A1_t + A2_t + A3_t + A4_t + A5_t + A6_t,
+    h_t >= h_0 ~ 0.5*(h_t - h_0)*(2*J_t + 2*W_0) + A_0,
+    .default = NA),
+  R_t = A_t/P_t, 
+    Q_t = case_when(
+    (h_t - h_0) > L ~ NA,
+    .default = (1.49/n)*(A_t)*(R_t^(2/3))*(S^(1/2)))
+  )
+```
+
+```{r Final Cleanup}
+## Simplified df with just time (t) and flow (Q_t)
+catcrk.Q <- subset(catcrk.depths2, select = c("t", "Q_t")) # Select columns
+colnames(catcrk.Q)[colnames(catcrk.Q) == "Q_t"] <- "Q_ccs" # Specifying units; "CCS" = cubic cm/sec
+
+## Convert Q_t from cubic cm/sec to cubic feet/sec (cfs)
+catcrk.Q <- catcrk.Q %>%
+  mutate(Q_cfs = Q_ccs*0.0000353146848166)
+```
+
+```{r Export to a CSV}
+## Export complete estimated flow dataset to a CSV file
+write.csv(catcrk.Q, "C:\\Users\\jessicaherrmann\\Desktop\\Delta_CatCrk_EstimatedFlows.csv")
+```

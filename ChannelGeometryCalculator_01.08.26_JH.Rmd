@@ -1,0 +1,105 @@
+---
+title: "ChannelGeometryCalculator_01.08.26_JH"
+author: "Jessica Herrmann"
+date: "2026-01-08"
+output: html_document
+---
+
+This script is designed to automate the calculations for channel geometry/initial conditions for all Delta sites where pressure transducers were deployed in summer 2025.
+
+Mathematical steps for estimating flow (Q) using Manning's Equation are below and also detailed here: <https://docs.google.com/document/d/1m4-D8H6UUB-bVoDu4kz7VK1cyIYRAUKvImsrpQHdjfY/edit?tab=t.0>
+
+```{r Package Libraries}
+library(curl)
+# library(dplyr) # Included in tidyverse
+library(tidyverse)
+library(tidyr)
+library(stringr)
+```
+
+```{r Load data}
+## Starting water depths and channel geometry values at time t = 0, a.k.a. when a given pressure transducer was placed in a stream
+chan.geom <-  curl("https://raw.githubusercontent.com/jnherrmann/Delta_ManningsStreamflow/refs/heads/main/Delta_ChannelGeometry_InitialValues_RAW.csv")
+chan.geom <- read.csv(chan.geom, header = T, sep = ",")
+```
+
+Steps:
+1. Solve for n using S and V_0
+2. Solve for angles m_beta1 through m_beta6
+3. Solve for sections of wetted perimeter at time t = 0, aka P_0 through P_6
+4. Solve for J_0
+5. Solve for m_alpha
+
+```{r Vectorize columns}
+h_0 <- as.numeric(chan.geom$h_0)
+d1_0 <- as.numeric(chan.geom$d1_0)
+d2_0 <- as.numeric(chan.geom$d2_0)
+d3_0 <- as.numeric(chan.geom$d3_0)
+d4_0 <- as.numeric(chan.geom$d4_0)
+d5_0 <- as.numeric(chan.geom$d5_0)
+S <- as.numeric(chan.geom$S)
+V_0 <- as.numeric(chan.geom$V_0)       # Note that V_0 is average velocity at time t = 0, in cm/s
+L <- as.numeric(chan.geom$L)
+x1 <- as.numeric(chan.geom$x1)
+x2 <- as.numeric(chan.geom$x2)
+x3 <- as.numeric(chan.geom$x3)
+x4 <- as.numeric(chan.geom$x4)
+x5 <- as.numeric(chan.geom$x5)
+x6 <- as.numeric(chan.geom$x6)
+A_0 <- as.numeric(chan.geom$A_0)
+B <- as.numeric(chan.geom$B)
+```
+
+```{r Solve for A_0}
+chan.geom2 <- chan.geom %>%
+  mutate(
+  A1_0 = d1_0*(x1 / 2),
+  A2_0 =  case_when(
+      d1_0 < d2_0 ~ d1_0*x2 + 0.5*x2*abs(d2_0 - d1_0),    # NOTE - You shouldn't get any NA's for these measurements (A1_0 through A6_0).
+      d1_0 >= d2_0 ~ d2_0*x2 + 0.5*x2*abs(d1_0 - d2_0),
+     .default = NA),
+  A3_0 =  case_when(
+      d2_0 < d3_0 ~ d2_0*x3 + 0.5*x3*abs(d3_0 - d2_0),
+      d2_0 >= d3_0 ~ d3_0*x2 + 0.5*x3*abs(d2_0 - d3_0),
+     .default = NA),
+  A4_0 =  case_when(
+      d3_0 < d4_0 ~ d3_0*x4 + 0.5*x4*abs(d4_0 - d3_0),
+      d3_0 >= d4_0 ~ d4_0*x4 + 0.5*x4*abs(d3_0 - d4_0),
+     .default = NA),
+  A5_0 =  case_when(
+      d4_0 < d5_0 ~ d4_0*x5 + 0.5*x5*abs(d5_0 - d4_0),
+      d4_0 >= d5_0 ~ d5_0*x5 + 0.5*x5*abs(d4_0 - d5_0),
+     .default = NA),
+  A6_0 = d5_0*(x6 / 2),
+  A_0 = A1_0 + A2_0 + A3_0 + A4_0 + A5_0 + A6_0,
+  m_beta1 = atan(x1 / d1_0),
+  m_beta2 = atan(x2 / abs(d2_0 - d1_0)),
+  m_beta3 = atan(x3 / abs(d3_0 - d2_0)),
+  m_beta4 = atan(x4 / abs(d4_0 - d3_0)),
+  m_beta5 = atan(x5 / abs(d5_0 - d4_0)),
+  m_beta6 = atan(x6 / d5_0),
+  P1_0 = x1 / sin(m_beta1),
+  P2_0 = x2 / sin(m_beta2),
+  P3_0 = x3 / sin(m_beta3),
+  P4_0 = x4 / sin(m_beta4),
+  P5_0 = x5 / sin(m_beta5),
+  P6_0 = x6 / sin(m_beta6),
+  P_0 = P1_0 + P2_0 + P3_0 + P4_0 + P5_0 + P6_0,
+  R_0 = A_0 / P_0,
+  n = (1 / V_0)*(R_0^(2/3))*(S^(1/2)),
+  J_0 = 0.5*(B - W_0),
+  m_alpha = atan(J_0 / L)
+  )
+
+## Replace all NaN's with 0's (can do this because NaN's are caused by initial depths of 0, so wetted perimeter segements should be 0 in these cases):
+chanGeom.final <- chan.geom2 %>%
+  mutate(across(everything(), ~ replace(., is.nan(.), 0)))
+
+# head(chanGeom.final)
+```
+
+```{r Export to a CSV}
+## Exporting final dataset to a CSV file (available on GitHub)
+write.csv(chanGeom.final, "C:\\Users\\jessicaherrmann\\Desktop\\Delta_ChannelGeometry_InitialValues_FINAL.csv")
+```
+
